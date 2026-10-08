@@ -3,7 +3,7 @@ require('dotenv').config()
 const express = require('express')
 const cors = require('cors')
 const mongoose = require('mongoose')
-const nodemailer = require('nodemailer')
+const { Resend } = require('resend')
 
 const app = express()
 
@@ -26,6 +26,13 @@ app.use(
 // Middleware
 // =========================
 app.use(express.json({ limit: '20kb' }))
+
+// =========================
+// Resend Configuration
+// =========================
+const resend = process.env.RESEND_API_KEY
+  ? new Resend(process.env.RESEND_API_KEY)
+  : null
 
 // =========================
 // Contact Schema
@@ -101,7 +108,7 @@ app.post('/api/contact', async (req, res) => {
       })
     }
 
-    // Save contact message
+    // Save contact message to MongoDB
     const saved = await Contact.create({
       name: name.trim(),
       email: email.trim(),
@@ -109,43 +116,26 @@ app.post('/api/contact', async (req, res) => {
     })
 
     // =========================
-    // SMTP Configuration Check
+    // Email Configuration Check
     // =========================
-    const smtpConfigured =
-      process.env.SMTP_HOST &&
-      process.env.SMTP_USER &&
-      process.env.SMTP_PASS &&
-      process.env.EMAIL_TO
-
-    if (!smtpConfigured) {
+    if (!resend || !process.env.EMAIL_TO) {
       console.warn(
-        'Contact saved, but email notification is not configured. Check SMTP environment variables.'
+        'Contact saved, but Resend email notification is not configured.'
       )
 
       return res.status(201).json({
         message:
-          'Thanks! Your message has been saved. Email notifications are not configured yet.'
+          'Your message was saved, but email notification is not configured yet.'
       })
     }
 
     // =========================
-    // Send Email Notification
+    // Send Email with Resend
     // =========================
     try {
-      const transporter = nodemailer.createTransport({
-        host: process.env.SMTP_HOST,
-        port: Number(process.env.SMTP_PORT || 587),
-        secure:
-          String(process.env.SMTP_SECURE || 'false').toLowerCase() === 'true',
-        auth: {
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASS
-        }
-      })
-
-      await transporter.sendMail({
-        from: process.env.EMAIL_FROM || process.env.SMTP_USER,
-        to: process.env.EMAIL_TO,
+      const { error } = await resend.emails.send({
+        from: process.env.EMAIL_FROM || 'onboarding@resend.dev',
+        to: [process.env.EMAIL_TO],
         replyTo: email.trim(),
         subject: `New portfolio message from ${name.trim()}`,
         text: `You received a new message through your portfolio.
@@ -156,8 +146,18 @@ Email: ${email.trim()}
 Message:
 ${message.trim()}
 
-Submitted: ${saved.createdAt.toISOString()}`
+Submitted:
+${saved.createdAt.toISOString()}`
       })
+
+      if (error) {
+        console.error('Resend email failed:', error)
+
+        return res.status(201).json({
+          message:
+            'Your message was saved, but the email notification could not be sent.'
+        })
+      }
 
       return res.status(201).json({
         message:
@@ -171,7 +171,7 @@ Submitted: ${saved.createdAt.toISOString()}`
 
       return res.status(201).json({
         message:
-          'Your message was saved, but the email notification could not be sent. Please check the backend email settings.'
+          'Your message was saved, but the email notification could not be sent.'
       })
     }
   } catch (error) {
